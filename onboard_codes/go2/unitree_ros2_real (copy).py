@@ -159,9 +159,9 @@ class UnitreeRos2Real(Node):
             low_state_topic= "/lowstate",
             low_cmd_topic= "/lowcmd",
             joy_stick_topic= "/wirelesscontroller",
-            env_cfg= dict(),
-            agent_cfg= dict(),
-            onboard_cfg= dict(),
+            forward_depth_topic= None, # if None and still need access, set to str "pyrealsense"
+            forward_depth_embedding_topic= "/forward_depth_embedding",
+            cfg= dict(),
             lin_vel_deadband= 0.1,
             ang_vel_deadband= 0.1,
             cmd_px_range= [0.4, 1.0], # check joy_stick_callback (p for positive, n for negative)
@@ -170,10 +170,11 @@ class UnitreeRos2Real(Node):
             cmd_ny_range= [0.4, 0.8], # check joy_stick_callback (p for positive, n for negative)
             cmd_pyaw_range= [0.4, 1.6], # check joy_stick_callback (p for positive, n for negative)
             cmd_nyaw_range= [0.4, 1.6], # check joy_stick_callback (p for positive, n for negative)
+            replace_obs_with_embeddings= [], # a list of strings, e.g. ["forward_depth"] then the corrseponding obs will be processed by _get_forward_depth_embedding_obs()
             move_by_wireless_remote= True, # if True, the robot will be controlled by a wireless remote
             model_device= "cpu",
             dof_pos_protect_ratio= 1.1, # if the dof_pos is out of the range of this ratio, the process will shutdown.
-            robot_class_name= "GO2",
+            robot_class_name= "H1",
             dryrun= True, # if True, the robot will not send commands to the real robot
         ):
         super().__init__("unitree_ros2_real")
@@ -184,8 +185,9 @@ class UnitreeRos2Real(Node):
         # Generate a unique cmd topic so that the low_cmd will not send to the robot's motor.
         self.low_cmd_topic = low_cmd_topic if not dryrun else low_cmd_topic + "_dryrun_" + str(np.random.randint(0, 65535))
         self.joy_stick_topic = joy_stick_topic
-        self.env_cfg = env_cfg
-        self.agent_cfg = agent_cfg
+        self.forward_depth_topic = forward_depth_topic
+        self.forward_depth_embedding_topic = forward_depth_embedding_topic
+        self.cfg = cfg
         self.lin_vel_deadband = lin_vel_deadband
         self.ang_vel_deadband = ang_vel_deadband
         self.cmd_px_range = cmd_px_range
@@ -194,6 +196,7 @@ class UnitreeRos2Real(Node):
         self.cmd_ny_range = cmd_ny_range
         self.cmd_pyaw_range = cmd_pyaw_range
         self.cmd_nyaw_range = cmd_nyaw_range
+        self.replace_obs_with_embeddings = replace_obs_with_embeddings
         self.move_by_wireless_remote = move_by_wireless_remote
         self.model_device = model_device
         self.dof_pos_protect_ratio = dof_pos_protect_ratio
@@ -214,28 +217,32 @@ class UnitreeRos2Real(Node):
         self.gravity_vec[:, self.up_axis_idx] = -1
         
         # observations
-        self.clip_obs = self.onboard_cfg["normalization"]["clip_observations"]
-        # 暂且不需要缩放
-        # self.obs_scales = self.cfg["normalization"]["obs_scales"]
-        # for k, v in self.obs_scales.items():
-        #     if isinstance(v, (list, tuple)):
-        #         self.obs_scales[k] = torch.tensor(v, device= self.model_device, dtype= torch.float32)
-        # # check whether there are embeddings in obs_components and launch encoder process later
-        
-        self.obs_segments = self.get_obs_segment_from_components(self.env_cfg["observations"]["policy"])
-        self.num_obs = self.get_num_obs_from_components(self.env_cfg["observations"]["policy"])
-        for obs_component in self.env_cfg["observations"]["policy"]:
+        self.clip_obs = self.cfg["normalization"]["clip_observations"]
+        self.obs_scales = self.cfg["normalization"]["obs_scales"]
+        for k, v in self.obs_scales.items():
+            if isinstance(v, (list, tuple)):
+                self.obs_scales[k] = torch.tensor(v, device= self.model_device, dtype= torch.float32)
+        # check whether there are embeddings in obs_components and launch encoder process later
+        if len(self.replace_obs_with_embeddings) > 0:
+            for comp in self.replace_obs_with_embeddings:
+                self.get_logger().warn(f"{comp} will be replaced with its embedding when get_obs, don't forget to launch the corresponding process before running the policy.")
+        self.obs_segments = self.get_obs_segment_from_components(self.cfg["env"]["obs_components"])
+        self.num_obs = self.get_num_obs_from_components(self.cfg["env"]["obs_components"])
+        if "privileged_obs_components" in self.cfg["env"].keys():
+            self.privileged_obs_segments = self.get_obs_segment_from_components(self.cfg["env"]["privileged_obs_components"])
+            self.num_privileged_obs = self.get_num_obs_from_components(self.cfg["env"]["privileged_obs_components"])
+        for obs_component in self.cfg["env"]["obs_components"]:
             if "orientation_cmds" in obs_component:
                 self.roll_pitch_yaw_cmd = torch.zeros(1, 3, device= self.model_device, dtype= torch.float32)
         
         # controls
-        self.control_type = self.onboard_cfg["control_type"]
+        self.control_type = self.cfg["control"]["control_type"]
         if not (self.control_type == "P"):
             raise NotImplementedError("Only position control is supported for now.")
         self.p_gains = []
         for i in range(self.NUM_DOF):
             name = self.dof_names[i] # set p_gains in simulation order
-            for k, v in self.onboard_cfg["control"]["stiffness"].items():
+            for k, v in self.cfg["control"]["stiffness"].items():
                 if k in name:
                     self.p_gains.append(v)
                     break # only one match
@@ -243,7 +250,7 @@ class UnitreeRos2Real(Node):
         self.d_gains = []
         for i in range(self.NUM_DOF):
             name = self.dof_names[i] # set d_gains in simulation order
-            for k, v in self.onboard_cfg["control"]["damping"].items():
+            for k, v in self.cfg["control"]["damping"].items():
                 if k in name:
                     self.d_gains.append(v)
                     break
@@ -253,10 +260,10 @@ class UnitreeRos2Real(Node):
         self.dof_vel_ = torch.empty(1, self.NUM_DOF, device= self.model_device, dtype= torch.float32)
         for i in range(self.NUM_DOF):
             name = self.dof_names[i]
-            default_joint_angle = self.env_cfg["init_state"]["joint_pos"][name]
+            default_joint_angle = self.cfg["init_state"]["default_joint_angles"][name]
             # in simulation order.
             self.default_dof_pos[i] = default_joint_angle
-        self.computer_clip_torque = self.onboard_cfg["control"].get("computer_clip_torque", True)
+        self.computer_clip_torque = self.cfg["control"].get("computer_clip_torque", True)
         self.get_logger().info("Computer Clip Torque (onboard) is " + str(self.computer_clip_torque))
         self.torque_limits = getattr(RobotCfgs, self.robot_class_name).torque_limits.to(self.model_device)
         if self.computer_clip_torque:
@@ -265,18 +272,18 @@ class UnitreeRos2Real(Node):
         
         # actions
         self.num_actions = self.NUM_ACTIONS
-        self.action_scale = self.onboard_cfg["control"]["action_scale"]
+        self.action_scale = self.cfg["control"]["action_scale"]
         self.get_logger().info("[Env] action scale: {:.1f}".format(self.action_scale))
-        self.clip_actions = self.onboard_cfg["normalization"]["clip_actions"]
-        if self.onboard_cfg["normalization"].get("clip_actions_method", None) == "hard":
+        self.clip_actions = self.cfg["normalization"]["clip_actions"]
+        if self.cfg["normalization"].get("clip_actions_method", None) == "hard":
             self.get_logger().info("clip_actions_method with hard mode")
-            self.get_logger().info("clip_actions_high: " + str(self.onboard_cfg["normalization"]["clip_actions_high"]))
-            self.get_logger().info("clip_actions_low: " + str(self.onboard_cfg["normalization"]["clip_actions_low"]))
+            self.get_logger().info("clip_actions_high: " + str(self.cfg["normalization"]["clip_actions_high"]))
+            self.get_logger().info("clip_actions_low: " + str(self.cfg["normalization"]["clip_actions_low"]))
             self.clip_actions_method = "hard"
-            self.clip_actions_low = torch.tensor(self.onboard_cfg["normalization"]["clip_actions_low"], device= self.model_device, dtype= torch.float32)
-            self.clip_actions_high = torch.tensor(self.onboard_cfg["normalization"]["clip_actions_high"], device= self.model_device, dtype= torch.float32)
+            self.clip_actions_low = torch.tensor(self.cfg["normalization"]["clip_actions_low"], device= self.model_device, dtype= torch.float32)
+            self.clip_actions_high = torch.tensor(self.cfg["normalization"]["clip_actions_high"], device= self.model_device, dtype= torch.float32)
         else:
-            self.get_logger().info("clip_actions_method is " + str(self.onboard_cfg["normalization"].get("clip_actions_method", None)))
+            self.get_logger().info("clip_actions_method is " + str(self.cfg["normalization"].get("clip_actions_method", None)))
         self.actions = torch.zeros(self.NUM_ACTIONS, device= self.model_device, dtype= torch.float32)
             
 
@@ -313,6 +320,22 @@ class UnitreeRos2Real(Node):
             self._joy_stick_callback,
             1
         )
+
+        if self.forward_depth_topic is not None:
+            self.forward_camera_sub = self.create_subscription(
+                Image,
+                self.forward_depth_topic,
+                self._forward_depth_callback,
+                1
+            )
+
+        if self.forward_depth_embedding_topic is not None and "forward_depth" in self.replace_obs_with_embeddings:
+            self.forward_depth_embedding_sub = self.create_subscription(
+                Float32MultiArray,
+                self.forward_depth_embedding_topic,
+                self._forward_depth_embedding_callback,
+                1,
+            )
 
         self.get_logger().info("ROS handlers started, waiting to recieve critical low state and wireless controller messages.")
         if not self.dryrun:
@@ -406,6 +429,13 @@ class UnitreeRos2Real(Node):
                 self.roll_pitch_yaw_cmd[0, 0] += 0.1
                 self.get_logger().info("Roll Command: " + str(self.roll_pitch_yaw_cmd))
 
+    def _forward_depth_callback(self, msg):
+        """ store and handle depth camera data """
+        pass
+
+    def _forward_depth_embedding_callback(self, msg):
+        self.forward_depth_embedding_buffer = torch.tensor(msg.data, device= self.model_device, dtype= torch.float32).view(1, -1)
+
     """ Done: ROS callbacks and handlers that update the buffer """
 
     """ refresh observation buffer and corresponding sub-functions """
@@ -439,6 +469,12 @@ class UnitreeRos2Real(Node):
 
     def _get_last_actions_obs(self):
         return self.actions
+
+    def _get_forward_depth_embedding_obs(self):
+        return self.forward_depth_embedding_buffer
+    
+    def _get_forward_depth_obs(self):
+        raise NotImplementedError()
     
     def _get_orientation_cmds_obs(self):
         return quat_rotate_inverse(
@@ -458,24 +494,29 @@ class UnitreeRos2Real(Node):
         corresponding order.
         """
         segments = OrderedDict()
-        if "base_lin_vel" in components:
+        if "lin_vel" in components:
             print("Warning: lin_vel is not typically available or accurate enough on the real robot. Will return zeros.")
-            segments["base_lin_vel"] = (3,)
-        if "base_ang_vel" in components:
-            segments["base_ang_vel"] = (3,)
+            segments["lin_vel"] = (3,)
+        if "ang_vel" in components:
+            segments["ang_vel"] = (3,)
         if "projected_gravity" in components:
             segments["projected_gravity"] = (3,)
-        if "velocity_commands" in components:
-            segments["velocity_commands"] = (3,)
-        if "joint_positions" in components:
-            segments["joint_positions"] = (self.NUM_DOF,)
-        if "joint_vel" in components:
-            segments["joint_vel"] = (self.NUM_DOF,)
-        if "actions" in components:
-            segments["actions"] = (self.NUM_ACTIONS,)
-        if "height_scan" in components:
-            print("Warning: height_scan is not typically available on the real robot.")
-            #segments["height_scan"] = (1, len(self.env_cfg["terrain"]["measured_points_x"]), len(self.env_cfg["terrain"]["measured_points_y"]))
+        if "commands" in components:
+            segments["commands"] = (3,)
+        if "dof_pos" in components:
+            segments["dof_pos"] = (self.NUM_DOF,)
+        if "dof_vel" in components:
+            segments["dof_vel"] = (self.NUM_DOF,)
+        if "last_actions" in components:
+            segments["last_actions"] = (self.NUM_ACTIONS,)
+        if "height_measurements" in components:
+            print("Warning: height_measurements is not typically available on the real robot.")
+            segments["height_measurements"] = (1, len(self.cfg["terrain"]["measured_points_x"]), len(self.cfg["terrain"]["measured_points_y"]))
+        if "forward_depth" in components:
+            if "output_resolution" in self.cfg["sensor"]["forward_camera"]:
+                segments["forward_depth"] = (1, *self.cfg["sensor"]["forward_camera"]["output_resolution"])
+            else:
+                segments["forward_depth"] = (1, *self.cfg["sensor"]["forward_camera"]["resolution"])
         if "base_pose" in components:
             segments["base_pose"] = (6,) # xyz + rpy
         if "robot_config" in components:

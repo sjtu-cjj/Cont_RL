@@ -4,7 +4,7 @@ from unitree_ros2_real import UnitreeRos2Real, get_euler_xyz
 
 import os
 import os.path as osp
-import yaml
+import json
 import time
 from collections import OrderedDict
 from copy import deepcopy
@@ -81,36 +81,31 @@ def main(args):
     rclpy.init()
 
     assert args.logdir is not None, "Please provide a logdir"
-    params_dir = osp.join(args.logdir, "params")
-    with open(osp.join(params_dir, "env.yaml"), "r") as f:
-        env_cfg_dict = yaml.unsafe_load(f)
-    with open(osp.join(params_dir, "agent.yaml"), "r") as f:
-        agent_cfg_dict = yaml.unsafe_load(f)
-    with open(osp.join(params_dir, "onboard.yaml"), "r") as f:
-        onboard_cfg_dict = yaml.unsafe_load(f)
+    with open(osp.join(args.logdir, "config.json"), "r") as f:
+        config_dict = json.load(f, object_pairs_hook= OrderedDict)
     
+    # modify the config_dict if needed
+    config_dict["control"]["computer_clip_torque"] = True
     
-    duration = env_cfg_dict["sim"]["dt"] * env_cfg_dict["decimation"] # in sec
+    duration = config_dict["sim"]["dt"] * config_dict["control"]["decimation"] # in sec
     device = "cuda"
 
     env_node = Go2Node(
         "go2",
         # low_cmd_topic= "low_cmd_dryrun", # for the dryrun safety
-        env_cfg= env_cfg_dict,
-        agent_cfg= agent_cfg_dict,
-        onboard_cfg= onboard_cfg_dict,
+        cfg= config_dict,
+        replace_obs_with_embeddings= ["forward_depth"],
         model_device= device,
         dryrun= not args.nodryrun,
     )
 
-    model = getattr(modules, agent_cfg_dict["policy"]["class_name"])(
+    model = getattr(modules, config_dict["runner"]["policy_class_name"])(
         num_actor_obs = env_node.num_obs,
-        num_critic_obs = env_node.num_obs,
-        #num_critic_obs = env_node.num_privileged_obs,
+        num_critic_obs = env_node.num_privileged_obs,
         num_actions= env_node.num_actions,
         obs_segments= env_node.obs_segments,
         privileged_obs_segments= env_node.privileged_obs_segments,
-        **agent_cfg_dict["policy"],
+        **config_dict["policy"],
     )
     # load the model with the latest checkpoint
     model_names = [i for i in os.listdir(args.logdir) if i.startswith("model_")]
