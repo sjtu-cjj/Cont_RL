@@ -7,5 +7,6 @@
 
 from .distillation import Distillation
 from .ppo import PPO
+from .streamingAC import streamingAC
 
-__all__ = ["PPO", "Distillation"]
+__all__ = ["PPO", "Distillation", "streamingAC"]
