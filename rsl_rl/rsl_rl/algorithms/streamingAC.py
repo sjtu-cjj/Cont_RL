@@ -10,6 +10,7 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Normal
+import os
 
 from rsl_rl.modules import ActorCriticStreaming
 
@@ -108,14 +109,14 @@ class streamingAC:
         elif obs.device != self.device:
             obs = obs.to(self.device)
         
-                with torch.no_grad():
+        with torch.no_grad():
             mu, std = self.pi(obs)
             dist = Normal(mu, std)
             action = dist.sample()
         
         return action
 
-
+    # 🔥🔥🔥 重要：网络更新算法起点 🔥🔥🔥
     def update_params(self, s, a, r, s_prime, done, overshooting_info=False):
         """核心更新方法，基于TD误差和eligibility traces进行在线学习"""
         done_mask = 0 if done else 1
@@ -154,10 +155,12 @@ class streamingAC:
         self.optimizer_policy.zero_grad()
         
         # 反向传播
+        # critic反向传播，保留计算图
         value_output.backward(retain_graph=True)
+        # actor反向传播，计算log_prob_pi和entropy_pi的梯度
         (log_prob_pi + entropy_pi).backward()
         
-        # 使用ObGD优化器更新参数
+        # 使用ObGD优化器更新参数，使用delta作为梯度
         self.optimizer_policy.step(delta.item(), reset=done)
         self.optimizer_value.step(delta.item(), reset=done)
 
@@ -177,3 +180,251 @@ class streamingAC:
             "entropy": dist.entropy().sum().item(),
             "td_error": delta.item()
         }
+    # 🔥🔥🔥 重要：网络更新算法终点 🔥🔥🔥
+
+    def load_pretrained_policy(self, checkpoint_path, finetune_mode="full", reset_optimizer=True):
+        """
+        加载预训练模型进行微调
+        
+        Args:
+            checkpoint_path: 预训练模型路径
+            finetune_mode: 微调模式
+                - "full": 微调整个网络
+                - "actor_only": 只微调actor网络，冻结critic
+                - "critic_only": 只微调critic网络，冻结actor
+                - "partial": 部分微调（可以根据需要自定义）
+            reset_optimizer: 是否重置优化器状态（eligibility traces等）
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"预训练模型文件未找到: {checkpoint_path}")
+        
+        print(f"正在加载预训练模型: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        # 打印checkpoint的结构信息
+        print(f"📋 Checkpoint keys: {list(checkpoint.keys())}")
+        
+        # 加载模型权重
+        if "model_state_dict" in checkpoint:
+            # Isaac Lab标准格式
+            model_state_dict = checkpoint["model_state_dict"]
+            print("📦 使用model_state_dict格式")
+        elif "policy_state_dict" in checkpoint:
+            # 可能的其他格式
+            model_state_dict = checkpoint["policy_state_dict"]
+            print("📦 使用policy_state_dict格式")
+        elif "ac_state_dict" in checkpoint:
+            # RSL-RL PPO格式
+            model_state_dict = checkpoint["ac_state_dict"]
+            print("📦 使用ac_state_dict格式（PPO模型）")
+        else:
+            # 直接的state_dict
+            model_state_dict = checkpoint
+            print("📦 使用直接state_dict格式")
+        
+        # 打印预训练模型的网络结构
+        print(f"\n🔍 预训练模型参数:")
+        for k, v in model_state_dict.items():
+            print(f"  {k}: {v.shape}")
+        
+        # 打印当前网络结构
+        current_dict = self.policy.state_dict()
+        print(f"\n🔍 当前StreamingAC网络参数:")
+        for k, v in current_dict.items():
+            print(f"  {k}: {v.shape}")
+        
+        # 尝试智能参数映射
+        mapped_dict = self._smart_parameter_mapping(model_state_dict, current_dict)
+        
+        # 过滤不匹配的键（如果网络结构有变化）
+        policy_dict = self.policy.state_dict()
+        filtered_dict = {}
+        
+        for k, v in mapped_dict.items():
+            if k in policy_dict and v.shape == policy_dict[k].shape:
+                filtered_dict[k] = v
+                print(f"  ✓ 加载参数: {k} {v.shape}")
+            else:
+                if k in policy_dict:
+                    print(f"  ✗ 跳过参数: {k} (形状不匹配: 预训练{v.shape} vs 当前{policy_dict[k].shape})")
+                else:
+                    print(f"  ✗ 跳过参数: {k} (当前网络中不存在)")
+        
+        if len(filtered_dict) == 0:
+            print("\n⚠️  警告: 没有成功加载任何参数！")
+            print("🔧 可能的解决方案:")
+            print("   1. 检查预训练模型是否与当前网络结构兼容")
+            print("   2. 确认预训练模型格式是否正确")
+            print("   3. 考虑调整网络结构使其与预训练模型匹配")
+            return False
+        
+        # 加载匹配的参数
+        policy_dict.update(filtered_dict)
+        self.policy.load_state_dict(policy_dict)
+        
+        print(f"\n✅ 成功加载 {len(filtered_dict)}/{len(model_state_dict)} 个参数")
+        
+        # 根据微调模式设置参数
+        self._set_finetune_mode(finetune_mode)
+        
+        # 重置优化器状态
+        if reset_optimizer:
+            self.reset_optimizer_states()
+            print("已重置优化器状态（eligibility traces）")
+        
+        print(f"预训练模型加载完成，微调模式: {finetune_mode}")
+        return True
+
+    def _smart_parameter_mapping(self, pretrained_dict, current_dict):
+        """
+        智能参数映射，尝试匹配不同命名格式的参数
+        """
+        mapped_dict = {}
+        
+        # 直接匹配
+        for k, v in pretrained_dict.items():
+            if k in current_dict:
+                mapped_dict[k] = v
+                continue
+        
+        # 如果直接匹配失败，尝试一些常见的映射
+        if len(mapped_dict) == 0:
+            print("🔄 直接匹配失败，尝试智能映射...")
+            
+            # PPO -> StreamingAC 映射
+            ppo_to_streaming_mapping = {
+                # Actor mappings (PPO uses actor.N, StreamingAC uses actor_layers.N)
+                'actor.0.weight': 'actor_layers.0.weight',
+                'actor.0.bias': 'actor_layers.0.bias', 
+                'actor.2.weight': 'actor_layers.1.weight',  # 跳过激活层
+                'actor.2.bias': 'actor_layers.1.bias',
+                'actor.4.weight': 'actor_layers.2.weight',  # 跳过激活层
+                'actor.4.bias': 'actor_layers.2.bias',
+                'actor.6.weight': 'linear_mu.weight',  # 输出层映射到mu
+                'actor.6.bias': 'linear_mu.bias',
+                'std': 'linear_std.bias',  # PPO的std是参数，StreamingAC的std是网络输出
+                
+                # Critic mappings (PPO uses critic.N, StreamingAC uses critic_layers.N)
+                'critic.0.weight': 'critic_layers.0.weight',
+                'critic.0.bias': 'critic_layers.0.bias',
+                'critic.2.weight': 'critic_layers.1.weight',  # 跳过激活层
+                'critic.2.bias': 'critic_layers.1.bias',
+                'critic.4.weight': 'critic_layers.2.weight',  # 跳过激活层
+                'critic.4.bias': 'critic_layers.2.bias',
+                'critic.6.weight': 'critic_linear_layer.weight',  # 输出层
+                'critic.6.bias': 'critic_linear_layer.bias'
+            }
+            
+            for pretrained_key, current_key in ppo_to_streaming_mapping.items():
+                if pretrained_key in pretrained_dict and current_key in current_dict:
+                    if pretrained_key == 'std':
+                        # 特殊处理std参数：PPO中是1D参数，StreamingAC中是bias
+                        std_param = pretrained_dict[pretrained_key]
+                        # PPO的std是全局参数，直接使用作为bias
+                        mapped_dict[current_key] = std_param
+                        print(f"  📌 特殊映射: {pretrained_key} ({std_param.shape}) -> {current_key}")
+                        
+                        # 同时需要为linear_std.weight创建合适的权重
+                        if 'linear_std.weight' in current_dict:
+                            # 创建单位矩阵或零矩阵作为权重
+                            weight_shape = current_dict['linear_std.weight'].shape
+                            mapped_dict['linear_std.weight'] = torch.zeros(weight_shape)
+                            print(f"  📌 自动创建: linear_std.weight {weight_shape}")
+                    else:
+                        mapped_dict[current_key] = pretrained_dict[pretrained_key]
+                        print(f"  📌 成功映射: {pretrained_key} -> {current_key}")
+                        
+            # 如果还是没有匹配到，尝试部分匹配
+            if len(mapped_dict) == 0:
+                print("🔄 尝试部分名称匹配...")
+                for pretrained_key, pretrained_value in pretrained_dict.items():
+                    for current_key in current_dict.keys():
+                        # 检查名称是否包含相似部分
+                        if any(part in current_key for part in pretrained_key.split('.')) or \
+                           any(part in pretrained_key for part in current_key.split('.')):
+                            if pretrained_value.shape == current_dict[current_key].shape:
+                                mapped_dict[current_key] = pretrained_value
+                                print(f"  📌 部分匹配: {pretrained_key} -> {current_key}")
+                                break
+        
+        return mapped_dict if mapped_dict else pretrained_dict
+
+    def _set_finetune_mode(self, mode):
+        """设置微调模式，决定哪些参数可以训练"""
+        if mode == "full":
+            # 微调整个网络
+            for param in self.policy.parameters():
+                param.requires_grad = True
+        elif mode == "actor_only":
+            # 只微调actor，冻结critic
+            for name, param in self.policy.named_parameters():
+                if 'actor' in name or 'linear_mu' in name or 'linear_std' in name:
+                    param.requires_grad = True
+                elif 'critic' in name:
+                    param.requires_grad = False
+        elif mode == "critic_only":
+            # 只微调critic，冻结actor
+            for name, param in self.policy.named_parameters():
+                if 'critic' in name:
+                    param.requires_grad = True
+                elif 'actor' in name or 'linear_mu' in name or 'linear_std' in name:
+                    param.requires_grad = False
+        elif mode == "partial":
+            # 示例：只微调最后几层
+            for name, param in self.policy.named_parameters():
+                # 可以根据需要自定义哪些层参与微调
+                if 'output' in name or 'final' in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+        
+        # 重新初始化优化器（只包含需要训练的参数）
+        self.optimizer_policy = ObGD(
+            [p for name, p in self.policy.named_parameters() 
+             if ('actor' in name or 'linear_mu' in name or 'linear_std' in name) and p.requires_grad],
+            lr=self.lr, gamma=self.gamma, lamda=self.lamda, kappa=self.kappa_policy
+        )
+        self.optimizer_value = ObGD(
+            [p for name, p in self.policy.named_parameters() 
+             if 'critic' in name and p.requires_grad],
+            lr=self.lr, gamma=self.gamma, lamda=self.lamda, kappa=self.kappa_value
+        )
+
+    def reset_optimizer_states(self):
+        """重置优化器状态，清空eligibility traces"""
+        for optimizer in [self.optimizer_policy, self.optimizer_value]:
+            for group in optimizer.param_groups:
+                for p in group["params"]:
+                    if p in optimizer.state:
+                        optimizer.state[p]["eligibility_trace"] = torch.zeros_like(p.data)
+        print("已重置所有eligibility traces")
+
+    def save_checkpoint(self, save_path, extra_info=None):
+        """保存当前模型状态"""
+        checkpoint = {
+            "model_state_dict": self.policy.state_dict(),
+            "optimizer_policy_state": self.optimizer_policy.state_dict(),
+            "optimizer_value_state": self.optimizer_value.state_dict(),
+            "algorithm_params": {
+                "lr": self.lr,
+                "gamma": self.gamma,
+                "lamda": self.lamda,
+                "kappa_policy": self.kappa_policy,
+                "kappa_value": self.kappa_value,
+                "entropy_coef": self.entropy_coef
+            }
+        }
+        
+        if extra_info:
+            checkpoint.update(extra_info)
+        
+        torch.save(checkpoint, save_path)
+        print(f"模型已保存到: {save_path}")
+
+    def adjust_learning_rate(self, new_lr):
+        """调整学习率（微调时可能需要使用更小的学习率）"""
+        self.lr = new_lr
+        for optimizer in [self.optimizer_policy, self.optimizer_value]:
+            for group in optimizer.param_groups:
+                group["lr"] = new_lr
+        print(f"学习率已调整为: {new_lr}")

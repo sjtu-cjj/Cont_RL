@@ -3,26 +3,13 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to play a checkpoint if an RL agent from RSL-RL."""
-
-import platform
-from importlib.metadata import version
-
-if version("rsl-rl-lib") != "2.3.1":
-    if platform.system() == "Windows":
-        cmd = [r".\isaaclab.bat", "-p", "-m", "pip", "install", "rsl-rl-lib==2.3.1"]
-    else:
-        cmd = ["./isaaclab.sh", "-p", "-m", "pip", "install", "rsl-rl-lib==2.3.1"]
-    print(
-        f"Please install the correct version of RSL-RL.\nExisting version is: '{version('rsl-rl-lib')}'"
-        " and required version is: '2.3.1'.\nTo install the correct version, run:"
-        f"\n\n\t{' '.join(cmd)}\n"
-    )
-    exit(1)
-
-"""Launch Isaac Sim Simulator first."""
+"""Script to play a checkpoint of an RL agent with constant velocity commands."""
 
 import argparse
+import os
+import time
+import torch
+import datetime
 
 from isaaclab.app import AppLauncher
 
@@ -30,20 +17,30 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser = argparse.ArgumentParser(description="Play an RL agent with constant velocity commands.")
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during playback.")
+parser.add_argument("--video_length", type=int, default=400, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--task", type=str, default="Cont_RL-Go2-ConstantVelocity-v0", help="Name of the task.")
 parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
     help="Use the pre-trained checkpoint from Nucleus.",
 )
-parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--real-time", action="store_true", default=True, help="Run in real-time, if possible.")
+
+# 添加命令参数
+parser.add_argument("--lin_vel_x", type=float, default=0.5, help="Linear velocity in x direction.")
+parser.add_argument("--lin_vel_y", type=float, default=0.0, help="Linear velocity in y direction.")
+parser.add_argument("--ang_vel_z", type=float, default=0.0, help="Angular velocity around z axis.")
+parser.add_argument("--heading", type=float, default=0.0, help="Heading direction in radians.")
+
+# 添加仿真时间控制参数
+parser.add_argument("--max_sim_time", type=float, default=20.0, help="Maximum simulation time in seconds.")
+
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -80,19 +77,26 @@ import Cont_RL.tasks  # noqa: F401
 
 
 def main():
-    """Play with RSL-RL agent."""
+    """Play with RSL-RL agent using constant velocity commands."""
     # parse configuration
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
-    agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    
+    # 设置固定命令值
+    env_cfg.commands.base_velocity.lin_vel_x = args_cli.lin_vel_x
+    env_cfg.commands.base_velocity.lin_vel_y = args_cli.lin_vel_y
+    env_cfg.commands.base_velocity.ang_vel_z = args_cli.ang_vel_z
+    env_cfg.commands.base_velocity.heading = args_cli.heading
+    
+    agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg("Cont_RL-Go2-Rough-v0", args_cli)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
     if args_cli.use_pretrained_checkpoint:
-        resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
+        resume_path = get_published_pretrained_checkpoint("rsl_rl", "Cont_RL-Go2-Rough-v0")
         if not resume_path:
             print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return
@@ -112,13 +116,19 @@ def main():
 
     # wrap for video recording
     if args_cli.video:
+        # 创建带有命令信息的目录名
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
+        cmd_str = f"vx{args_cli.lin_vel_x}_vy{args_cli.lin_vel_y}_wz{args_cli.ang_vel_z}"
+        video_folder = os.path.join(log_dir, "videos", f"constant_cmd_{date_str}_{cmd_str}")
+        
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
+            "video_folder": video_folder,
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
         }
-        print("[INFO] Recording videos during training.")
+        print("[INFO] Recording videos during playback.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
@@ -133,20 +143,14 @@ def main():
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
-    # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(ppo_runner.alg.policy, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(
-        ppo_runner.alg.policy, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
-    )
-
     dt = env.unwrapped.step_dt
+    max_steps = int(args_cli.max_sim_time / dt)
 
     # reset environment
     obs, _ = env.get_observations()
     timestep = 0
     # simulate environment
-    while simulation_app.is_running():
+    while simulation_app.is_running() and timestep < max_steps:
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
@@ -154,11 +158,11 @@ def main():
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
-        if args_cli.video:
-            timestep += 1
+        
+        timestep += 1
+        if args_cli.video and timestep >= args_cli.video_length:
             # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+            break
 
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)
@@ -173,4 +177,4 @@ if __name__ == "__main__":
     # run the main function
     main()
     # close sim app
-    simulation_app.close()
+    simulation_app.close() 

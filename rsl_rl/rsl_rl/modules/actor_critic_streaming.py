@@ -40,9 +40,9 @@ class ActorCriticStreaming(nn.Module):
         num_actions,
         actor_hidden_dims=[256, 256, 256],  # 改回多层256维隐藏层
         critic_hidden_dims=[256, 256, 256],  # 改回多层256维隐藏层
-        activation="leaky_relu",  # 更改为leaky_relu
+        activation="elu",  # 更改为elu
         init_noise_std=1.0,
-        noise_std_type: str = "learned",  # 更改为learned类型，表示网络学习std
+        noise_std_type: str = "scalar",  # 改回scalar类型，表示固定标准差
         **kwargs,
     ):
         if kwargs:
@@ -58,32 +58,51 @@ class ActorCriticStreaming(nn.Module):
         mlp_input_dim_a = num_actor_obs
         mlp_input_dim_c = num_critic_obs
         
-        # Actor Network - 动态构建多层网络
-        self.actor_layers = nn.ModuleList()
-        # 输入层
-        self.actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
-        # 隐藏层
-        for i in range(len(actor_hidden_dims) - 1):
-            self.actor_layers.append(nn.Linear(actor_hidden_dims[i], actor_hidden_dims[i + 1]))
-        # 输出层
-        self.linear_mu = nn.Linear(actor_hidden_dims[-1], num_actions)
-        self.linear_std = nn.Linear(actor_hidden_dims[-1], num_actions)
+        # Actor Network - 使用Sequential结构，保持PPO命名方式
+        actor_layers = []
+        # 第0层: 输入层
+        actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
+        actor_layers.append(nn.LayerNorm(actor_hidden_dims[0]))
+        # 第2层: 隐藏层1  
+        actor_layers.append(nn.Linear(actor_hidden_dims[0], actor_hidden_dims[1]))
+        actor_layers.append(nn.LayerNorm(actor_hidden_dims[1]))
+        # 第4层: 隐藏层2
+        actor_layers.append(nn.Linear(actor_hidden_dims[1], actor_hidden_dims[2]))
+        actor_layers.append(nn.LayerNorm(actor_hidden_dims[2]))
+        # 第6层: 输出层
+        actor_layers.append(nn.Linear(actor_hidden_dims[-1], num_actions))
         
-        # Critic Network - 动态构建多层网络  
-        self.critic_layers = nn.ModuleList()
-        # 输入层
-        self.critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
-        # 隐藏层
-        for i in range(len(critic_hidden_dims) - 1):
-            self.critic_layers.append(nn.Linear(critic_hidden_dims[i], critic_hidden_dims[i + 1]))
-        # 输出层
-        self.critic_linear_layer = nn.Linear(critic_hidden_dims[-1], 1)
+        self.actor = nn.Sequential(*actor_layers)
+        
+        # 根据noise_std_type决定标准差实现方式
+        if noise_std_type == "learned":
+            self.linear_std = nn.Linear(actor_hidden_dims[-1], num_actions)
+        else:  # scalar type
+            self.linear_std = None
+            # 固定标准差参数
+            self.register_parameter("std", nn.Parameter(torch.ones(num_actions) * init_noise_std))
+        
+        # Critic Network - 使用Sequential结构，保持PPO命名方式  
+        critic_layers = []
+        # 第0层: 输入层
+        critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
+        critic_layers.append(nn.LayerNorm(critic_hidden_dims[0]))
+        # 第2层: 隐藏层1
+        critic_layers.append(nn.Linear(critic_hidden_dims[0], critic_hidden_dims[1]))
+        critic_layers.append(nn.LayerNorm(critic_hidden_dims[1]))
+        # 第4层: 隐藏层2
+        critic_layers.append(nn.Linear(critic_hidden_dims[1], critic_hidden_dims[2]))
+        critic_layers.append(nn.LayerNorm(critic_hidden_dims[2]))
+        # 第6层: 输出层
+        critic_layers.append(nn.Linear(critic_hidden_dims[-1], 1))
+        
+        self.critic = nn.Sequential(*critic_layers)
 
         # 应用权重初始化
         self.apply(initialize_weights)
 
-        print(f"Actor Network: {mlp_input_dim_a} -> {' -> '.join(map(str, actor_hidden_dims))} -> mu({num_actions}) + std({num_actions})")
-        print(f"Critic Network: {mlp_input_dim_c} -> {' -> '.join(map(str, critic_hidden_dims))} -> value(1)")
+        print(f"Actor Network (PPO-style): {mlp_input_dim_a} -> {' -> '.join(map(str, actor_hidden_dims))} -> mu({num_actions}) + std({num_actions}, {noise_std_type})")
+        print(f"Critic Network (PPO-style): {mlp_input_dim_c} -> {' -> '.join(map(str, critic_hidden_dims))} -> value(1)")
 
         # 存储噪声类型（兼容性）
         self.noise_std_type = noise_std_type
@@ -94,29 +113,39 @@ class ActorCriticStreaming(nn.Module):
         Normal.set_default_validate_args(False)
 
     def actor_forward(self, x):
-        """Actor前向传播，支持多层网络结构"""
-        # 遍历所有隐藏层
-        for layer in self.actor_layers:
+        """Actor前向传播，使用Sequential结构"""
+        # 前向传播到第6层之前，应用elu激活
+        for i, layer in enumerate(self.actor):
             x = layer(x)
-            x = F.layer_norm(x, x.size())
-            x = F.leaky_relu(x)
+            # 对Linear层应用elu，LayerNorm层不需要
+            if isinstance(layer, nn.Linear) and i < len(self.actor) - 1:  # 不是最后一层
+                x = F.elu(x)
         
-        # 输出层
-        mu = self.linear_mu(x)
-        pre_std = self.linear_std(x)
-        std = F.softplus(pre_std)  # 使用softplus确保std为正值
+        # 最后一层的输出就是mu
+        mu = x
+        
+        # 根据noise_std_type决定标准差计算方式
+        if self.noise_std_type == "learned":
+            # 需要重新获取倒数第二层的输出
+            x_feature = x  # 这里需要修改，获取特征层输出
+            pre_std = self.linear_std(x_feature)
+            std = F.softplus(pre_std)  # 使用softplus确保std为正值
+        else:  # scalar type
+            # 使用固定标准差，扩展为与mu相同的batch维度
+            std = self.std.expand_as(mu)
+        
         return mu, std
 
     def critic_forward(self, x):
-        """Critic前向传播，支持多层网络结构"""
-        # 遍历所有隐藏层
-        for layer in self.critic_layers:
+        """Critic前向传播，使用Sequential结构"""
+        # 前向传播，应用elu激活
+        for i, layer in enumerate(self.critic):
             x = layer(x)
-            x = F.layer_norm(x, x.size())
-            x = F.leaky_relu(x)
+            # 对Linear层应用elu，LayerNorm层不需要，最后一层也不需要
+            if isinstance(layer, nn.Linear) and i < len(self.critic) - 1:  # 不是最后一层
+                x = F.elu(x)
         
-        # 输出层      
-        return self.critic_linear_layer(x)
+        return x
 
     @staticmethod
     # not used at the moment

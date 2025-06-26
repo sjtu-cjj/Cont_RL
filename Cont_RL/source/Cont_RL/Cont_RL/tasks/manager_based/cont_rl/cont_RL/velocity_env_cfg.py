@@ -131,12 +131,12 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-        )
+        # height_scan = ObsTerm(
+        #     func=mdp.height_scan,
+        #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+        #     noise=Unoise(n_min=-0.1, n_max=0.1),
+        #     clip=(-1.0, 1.0),
+        # )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -260,7 +260,7 @@ class RewardsCfg:
         func=mdp.feet_air_time,
         weight=1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*FOOT"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
             "command_name": "base_velocity",
             "threshold": 0.5,
         },
@@ -268,7 +268,7 @@ class RewardsCfg:
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*THIGH|.*CALF"), "threshold": 1.0},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_thigh|.*_calf"), "threshold": 1.0},
     )
 
     # for hardware safety
@@ -304,7 +304,7 @@ class RewardsCfg:
 #         func=mdp.feet_air_time,
 #         weight=0.125,
 #         params={
-#             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*FOOT"),
+#             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
 #             "command_name": "base_velocity",
 #             "threshold": 0.5,
 #         },
@@ -312,7 +312,7 @@ class RewardsCfg:
 #     undesired_contacts = RewTerm(
 #         func=mdp.undesired_contacts,
 #         weight=-1.0,
-#         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*THIGH"), "threshold": 1.0},
+#         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_thigh"), "threshold": 1.0},
 #     )
 #     # -- optional penalties
 #     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)

@@ -6,6 +6,7 @@
 from isaaclab.utils import configclass
 
 from .rough_env_cfg import UnitreeGo2RoughEnvCfg
+import Cont_RL.tasks.manager_based.cont_rl.cont_RL.mdp as mdp
 
 
 @configclass
@@ -34,10 +35,11 @@ class UnitreeGo2FlatEnvCfg_PLAY(UnitreeGo2FlatEnvCfg):
         super().__post_init__()
 
         # make a smaller scene for play
-        self.scene.num_envs = 50
+        self.scene.num_envs = 1
         self.scene.env_spacing = 2.5
         # disable randomization for play
         self.observations.policy.enable_corruption = False
         # remove random pushing event
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+

@@ -248,3 +248,141 @@ def energy_consumption(
     return energy * scale
 
 
+# def joint_adaptation_reward(
+#     env: ManagerBasedRLEnv,
+#     healthy_joints_bonus: float = 0.1,
+#     damaged_joints_penalty: float = 0.2,
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     """Reward for adapting to joint damage by encouraging use of healthy joints.
+    
+#     This function encourages the robot to adapt to joint damage by:
+#     1. Providing bonus for using healthy joints efficiently
+#     2. Penalizing excessive use of damaged joints
+    
+#     Args:
+#         env: The environment instance.
+#         healthy_joints_bonus: Bonus weight for using healthy joints.
+#         damaged_joints_penalty: Penalty weight for overusing damaged joints.
+#         asset_cfg: Configuration for the robot asset.
+        
+#     Returns:
+#         torch.Tensor: Adaptation reward for each environment.
+#     """
+#     # Extract the asset
+#     asset = env.scene[asset_cfg.name]
+    
+#     # Get joint torques (absolute values for effort calculation)
+#     joint_torques = torch.abs(asset.data.applied_torque)
+    
+#     # For now, assume all joints are healthy (you can modify this based on your damage model)
+#     # In practice, you would have a damage mask: damaged_joints_mask = get_damaged_joints_mask(env)
+#     num_joints = joint_torques.shape[1]
+#     healthy_joints_mask = torch.ones_like(joint_torques, dtype=torch.bool)
+    
+#     # Calculate torque distribution efficiency
+#     total_torque = torch.sum(joint_torques, dim=1, keepdim=True)
+#     torque_distribution = joint_torques / (total_torque + 1e-8)  # Avoid division by zero
+    
+#     # Reward even distribution among healthy joints (avoid overloading single joints)
+#     torque_variance = torch.var(torque_distribution, dim=1)
+#     adaptation_reward = -torque_variance * healthy_joints_bonus
+    
+#     return adaptation_reward
+
+
+# def stability_reward(
+#     env: ManagerBasedRLEnv,
+#     orientation_threshold: float = 0.1,
+#     velocity_threshold: float = 0.05,
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     """Reward for maintaining stability during adaptation.
+    
+#     This function rewards the robot for maintaining stable motion patterns
+#     even when joints are damaged, emphasizing smooth and controlled movement.
+    
+#     Args:
+#         env: The environment instance.
+#         orientation_threshold: Threshold for orientation stability.
+#         velocity_threshold: Threshold for velocity smoothness.
+#         asset_cfg: Configuration for the robot asset.
+        
+#     Returns:
+#         torch.Tensor: Stability reward for each environment.
+#     """
+#     # Extract the asset
+#     asset = env.scene[asset_cfg.name]
+    
+#     # Check orientation stability (roll and pitch should be small)
+#     root_quat = asset.data.root_quat_w
+#     from isaaclab.utils.math import quat_to_euler_xyz
+#     roll, pitch, _ = quat_to_euler_xyz(root_quat)
+    
+#     orientation_penalty = torch.abs(roll) + torch.abs(pitch)
+#     orientation_stable = orientation_penalty < orientation_threshold
+    
+#     # Check velocity smoothness (low angular velocity in roll/pitch)
+#     ang_vel = asset.data.root_ang_vel_w
+#     velocity_smoothness = torch.abs(ang_vel[:, 0]) + torch.abs(ang_vel[:, 1])  # roll and pitch rates
+#     velocity_smooth = velocity_smoothness < velocity_threshold
+    
+#     # Combine stability metrics
+#     stability_score = orientation_stable.float() + velocity_smooth.float()
+    
+#     return stability_score
+
+
+# def damaged_joint_compensation(
+#     env: ManagerBasedRLEnv,
+#     damaged_joints_mask: torch.Tensor = None,
+#     compensation_bonus: float = 0.5,
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     """Reward for compensatory movement patterns when joints are damaged.
+    
+#     This function encourages the development of alternative movement patterns
+#     that compensate for damaged joints by utilizing healthy joints more effectively.
+    
+#     Args:
+#         env: The environment instance.
+#         damaged_joints_mask: Boolean mask indicating which joints are damaged.
+#         compensation_bonus: Bonus for effective compensation strategies.
+#         asset_cfg: Configuration for the robot asset.
+        
+#     Returns:
+#         torch.Tensor: Compensation reward for each environment.
+#     """
+#     # Extract the asset
+#     asset = env.scene[asset_cfg.name]
+    
+#     # Get joint positions and velocities
+#     joint_pos = asset.data.joint_pos
+#     joint_vel = asset.data.joint_vel
+    
+#     if damaged_joints_mask is None:
+#         # Default: no damaged joints (you can implement damage detection here)
+#         damaged_joints_mask = torch.zeros_like(joint_pos, dtype=torch.bool)
+    
+#     # Calculate compensation effectiveness
+#     # Healthy joints should show more activity when damaged joints are present
+#     healthy_joints_mask = ~damaged_joints_mask
+    
+#     # Measure healthy joint utilization
+#     healthy_joint_activity = torch.abs(joint_vel) * healthy_joints_mask.float()
+#     damaged_joint_activity = torch.abs(joint_vel) * damaged_joints_mask.float()
+    
+#     # Reward high healthy joint activity when damaged joints are present
+#     if torch.any(damaged_joints_mask):
+#         total_healthy_activity = torch.sum(healthy_joint_activity, dim=1)
+#         total_damaged_activity = torch.sum(damaged_joint_activity, dim=1)
+        
+#         # Encourage healthy joints to compensate
+#         compensation_ratio = total_healthy_activity / (total_damaged_activity + 1e-8)
+#         compensation_reward = torch.clamp(compensation_ratio * compensation_bonus, 0, 1)
+#     else:
+#         compensation_reward = torch.zeros(env.num_envs, device=env.device)
+    
+#     return compensation_reward
+
+

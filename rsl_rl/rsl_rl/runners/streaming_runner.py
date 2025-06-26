@@ -17,6 +17,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
     ActorCriticRecurrent,
+    ActorCriticStreaming,
     EmpiricalNormalization,
 )
 from rsl_rl.utils import store_code_state
@@ -43,6 +44,7 @@ class StreamingRunner:
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
+        
 
         # resolve type of privileged observations for streaming AC
         if "critic" in extras["observations"]:
@@ -58,7 +60,7 @@ class StreamingRunner:
 
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
-        policy: ActorCritic | ActorCriticRecurrent = policy_class(
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticStreaming = policy_class(
             num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
@@ -142,13 +144,21 @@ class StreamingRunner:
         for it in range(start_iter, tot_iter):
             start = time.time()
             
+            # 收集损失信息
+            collected_losses = {
+                "value_function": [],
+                "policy_loss": [],
+                "entropy": [],
+                "td_error": []
+            }
+            
             # Streaming rollout and update - learn online
             for _ in range(self.num_steps_per_env):
                 # Store previous observations for update_params
                 prev_obs = obs.clone()
                 prev_privileged_obs = privileged_obs.clone()
                 
-                # Sample actions using streamingAC's sample_action method
+                # Sample actions using streamingAC's actor
                 if hasattr(self.alg, 'sample_action'):
                     actions = self.alg.sample_action(obs)
                 else:
@@ -180,7 +190,15 @@ class StreamingRunner:
                         done = dones[env_idx].bool().item()
                         
                         # Update parameters using streamingAC's update_params
-                        loss_info = self.alg.update_params(s, a, r, s_prime, done)
+                        loss_info = self.alg.update_params(s, a, r, s_prime, done, overshooting_info=True)
+                        
+                        # 收集损失信息
+                        if loss_info:
+                            for key in collected_losses.keys():
+                                if key in loss_info:
+                                    collected_losses[key].append(loss_info[key])
+                        
+                        # print(f"loss_info: {loss_info}")
                 
                 # Book keeping
                 if self.log_dir is not None:
@@ -199,16 +217,17 @@ class StreamingRunner:
                     cur_reward_sum[new_ids] = 0
                     cur_episode_length[new_ids] = 0
 
+            # 计算平均损失
+            loss_dict = {}
+            for key in collected_losses.keys():
+                if collected_losses[key]:
+                    loss_dict[key] = sum(collected_losses[key]) / len(collected_losses[key])
+                else:
+                    loss_dict[key] = 0.0
+            
             stop = time.time()
             collection_time = stop - start
             learn_time = 0.0  # Learning happens during collection for streaming
-            
-            # Create loss dict for logging compatibility
-            loss_dict = {
-                "value_function": 0.0,
-                "surrogate": 0.0, 
-                "entropy": 0.0,
-            }
             
             self.current_learning_iteration = it
             # log info
