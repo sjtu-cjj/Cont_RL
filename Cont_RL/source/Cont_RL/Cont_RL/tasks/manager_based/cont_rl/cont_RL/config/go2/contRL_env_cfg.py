@@ -137,9 +137,35 @@ class UnitreeGo2FlatContRLEnvCfg(UnitreeGo2RoughContRLEnvCfg):
         damaged_robot_cfg = self._create_damaged_config_from_env()
         self.scene.robot = damaged_robot_cfg.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
+        # # ========== 针对关节失效的奖励调整 ==========
+        # # 1. 调整任务目标权重 - 更注重前进而非转向
+        # self.rewards.track_lin_vel_xy_exp.weight = 2.0  # 提高前进奖励
+        # self.rewards.track_ang_vel_z_exp.weight = 0.0   # 降低转向要求，因为RR_hip失效影响转向
+        
+        # # 2. 放宽稳定性要求 - 容忍必要的补偿动作
+        # self.rewards.lin_vel_z_l2.weight = -1.0         # 减少垂直速度惩罚（原-2.0）
+        # self.rewards.ang_vel_xy_l2.weight = -0.02       # 减少俯仰侧翻惩罚（原-0.05）
+        # self.rewards.flat_orientation_l2.weight = -1.0  # 减少姿态惩罚（原-2.5）
+        
+        # # 3. 调整动作平滑性 - 允许更大的补偿动作
+        # self.rewards.action_rate_l2.weight = -0.005     # 减少动作变化惩罚（原-0.01）
+        # self.rewards.dof_acc_l2.weight = -1.0e-7        # 减少加速度惩罚（原-2.5e-7）
+        
+        # # 4. 重新设计步态奖励 - 适应三足/异常步态
+        # self.rewards.feet_air_time.weight = 0.0         # 降低足部滞空要求（原0.25）
+        
+        # # 5. 移除或调整不适用的奖励
+        # self.rewards.hip_joint_error.weight = 0.0      # 降低髋关节误差惩罚（原-1.0）
+        # self.rewards.stand_still.weight = -1.0         # 降低静止惩罚（原-2.0）
+        
+        
+        # # 7. 能效相关 - 考虑到补偿需要更多能量
+        # self.rewards.energy_consumption.weight = -1e-5  # 减少能耗惩罚（原-2e-5）
+        # self.rewards.dof_torques_l2.weight = -0.0001    # 减少扭矩惩罚（原-0.0002）
         # override rewards
         self.rewards.flat_orientation_l2.weight = -2.5
         self.rewards.feet_air_time.weight = 0.25
+
 
         # change terrain to flat
         self.scene.terrain.terrain_type = "plane"
@@ -163,7 +189,7 @@ class UnitreeGo2FlatContRLEnvCfg_PLAY(UnitreeGo2FlatContRLEnvCfg):
         super().__post_init__()
 
         # make a smaller scene for play
-        self.scene.num_envs = 1
+        self.scene.num_envs = 16
         self.scene.env_spacing = 2.5
         # disable randomization for play
         self.observations.policy.enable_corruption = False

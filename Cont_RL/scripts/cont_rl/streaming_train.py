@@ -35,7 +35,7 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train streamingAC agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
+parser.add_argument("--video_interval", type=int, default=200, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -208,6 +208,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # create StreamingRunner from rsl-rl
     print(f"[INFO] Creating StreamingRunner with device: {agent_cfg.device}")
     runner = StreamingRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    
+    # 立即加载预训练模型覆盖稀疏初始化
+    if args_cli.pretrained_checkpoint:
+        print(f"🔄 Loading pretrained model to override sparse initialization...")
+        alg = runner.alg
+        alg.load_pretrained_policy(
+            checkpoint_path=args_cli.pretrained_checkpoint,
+            finetune_mode=args_cli.finetune_mode,
+            reset_optimizer=True
+        )
     
     # write git state to logs
     runner.add_git_repo_to_log(__file__)

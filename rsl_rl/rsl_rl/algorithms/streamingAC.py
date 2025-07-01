@@ -281,73 +281,40 @@ class streamingAC:
         """
         mapped_dict = {}
         
-        # 直接匹配
-        for k, v in pretrained_dict.items():
-            if k in current_dict:
-                mapped_dict[k] = v
-                continue
-        
-        # 如果直接匹配失败，尝试一些常见的映射
-        if len(mapped_dict) == 0:
-            print("🔄 直接匹配失败，尝试智能映射...")
+        # 智能映射（PPO -> StreamingAC）- 无论直接匹配结果如何都执行
+        print("🔄 尝试智能映射...")
+        ppo_to_streaming_mapping = {
+            # Actor mappings: PPO(0,2,4,6) -> StreamingAC(0,1,2,3)
+            'actor.0.weight': 'actor.0.weight',
+            'actor.0.bias': 'actor.0.bias', 
+            'actor.2.weight': 'actor.1.weight',  # PPO第2层 -> StreamingAC第1层
+            'actor.2.bias': 'actor.1.bias',
+            'actor.4.weight': 'actor.2.weight',  # PPO第4层 -> StreamingAC第2层
+            'actor.4.bias': 'actor.2.bias',
+            'actor.6.weight': 'actor.3.weight',  # PPO第6层 -> StreamingAC第3层（输出层）
+            'actor.6.bias': 'actor.3.bias',
+            'std': 'std',  # PPO的std参数直接映射
             
-            # PPO -> StreamingAC 映射
-            ppo_to_streaming_mapping = {
-                # Actor mappings (PPO uses actor.N, StreamingAC uses actor_layers.N)
-                'actor.0.weight': 'actor_layers.0.weight',
-                'actor.0.bias': 'actor_layers.0.bias', 
-                'actor.2.weight': 'actor_layers.1.weight',  # 跳过激活层
-                'actor.2.bias': 'actor_layers.1.bias',
-                'actor.4.weight': 'actor_layers.2.weight',  # 跳过激活层
-                'actor.4.bias': 'actor_layers.2.bias',
-                'actor.6.weight': 'linear_mu.weight',  # 输出层映射到mu
-                'actor.6.bias': 'linear_mu.bias',
-                'std': 'linear_std.bias',  # PPO的std是参数，StreamingAC的std是网络输出
-                
-                # Critic mappings (PPO uses critic.N, StreamingAC uses critic_layers.N)
-                'critic.0.weight': 'critic_layers.0.weight',
-                'critic.0.bias': 'critic_layers.0.bias',
-                'critic.2.weight': 'critic_layers.1.weight',  # 跳过激活层
-                'critic.2.bias': 'critic_layers.1.bias',
-                'critic.4.weight': 'critic_layers.2.weight',  # 跳过激活层
-                'critic.4.bias': 'critic_layers.2.bias',
-                'critic.6.weight': 'critic_linear_layer.weight',  # 输出层
-                'critic.6.bias': 'critic_linear_layer.bias'
-            }
-            
-            for pretrained_key, current_key in ppo_to_streaming_mapping.items():
-                if pretrained_key in pretrained_dict and current_key in current_dict:
-                    if pretrained_key == 'std':
-                        # 特殊处理std参数：PPO中是1D参数，StreamingAC中是bias
-                        std_param = pretrained_dict[pretrained_key]
-                        # PPO的std是全局参数，直接使用作为bias
-                        mapped_dict[current_key] = std_param
-                        print(f"  📌 特殊映射: {pretrained_key} ({std_param.shape}) -> {current_key}")
-                        
-                        # 同时需要为linear_std.weight创建合适的权重
-                        if 'linear_std.weight' in current_dict:
-                            # 创建单位矩阵或零矩阵作为权重
-                            weight_shape = current_dict['linear_std.weight'].shape
-                            mapped_dict['linear_std.weight'] = torch.zeros(weight_shape)
-                            print(f"  📌 自动创建: linear_std.weight {weight_shape}")
-                    else:
-                        mapped_dict[current_key] = pretrained_dict[pretrained_key]
-                        print(f"  📌 成功映射: {pretrained_key} -> {current_key}")
-                        
-            # 如果还是没有匹配到，尝试部分匹配
-            if len(mapped_dict) == 0:
-                print("🔄 尝试部分名称匹配...")
-                for pretrained_key, pretrained_value in pretrained_dict.items():
-                    for current_key in current_dict.keys():
-                        # 检查名称是否包含相似部分
-                        if any(part in current_key for part in pretrained_key.split('.')) or \
-                           any(part in pretrained_key for part in current_key.split('.')):
-                            if pretrained_value.shape == current_dict[current_key].shape:
-                                mapped_dict[current_key] = pretrained_value
-                                print(f"  📌 部分匹配: {pretrained_key} -> {current_key}")
-                                break
+            # Critic mappings: PPO(0,2,4,6) -> StreamingAC(0,1,2,3)
+            'critic.0.weight': 'critic.0.weight',
+            'critic.0.bias': 'critic.0.bias',
+            'critic.2.weight': 'critic.1.weight',  # PPO第2层 -> StreamingAC第1层
+            'critic.2.bias': 'critic.1.bias',
+            'critic.4.weight': 'critic.2.weight',  # PPO第4层 -> StreamingAC第2层
+            'critic.4.bias': 'critic.2.bias',
+            'critic.6.weight': 'critic.3.weight',  # PPO第6层 -> StreamingAC第3层（输出层）
+            'critic.6.bias': 'critic.3.bias'
+        }
         
-        return mapped_dict if mapped_dict else pretrained_dict
+        for pretrained_key, current_key in ppo_to_streaming_mapping.items():
+            if pretrained_key in pretrained_dict and current_key in current_dict:
+                if current_key not in mapped_dict:  # 避免重复映射
+                    mapped_dict[current_key] = pretrained_dict[pretrained_key]
+                    print(f"  📌 智能映射: {pretrained_key} -> {current_key}")
+        
+        
+        print(f"📊 映射结果: {len(mapped_dict)}/{len(current_dict)} 个参数成功映射")
+        return mapped_dict
 
     def _set_finetune_mode(self, mode):
         """设置微调模式，决定哪些参数可以训练"""

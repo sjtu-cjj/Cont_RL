@@ -58,18 +58,15 @@ class ActorCriticStreaming(nn.Module):
         mlp_input_dim_a = num_actor_obs
         mlp_input_dim_c = num_critic_obs
         
-        # Actor Network - 使用Sequential结构，保持PPO命名方式
+        # Actor Network - 使用Sequential结构，保持PPO命名方式（无LayerNorm）
         actor_layers = []
         # 第0层: 输入层
         actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
-        actor_layers.append(nn.LayerNorm(actor_hidden_dims[0]))
-        # 第2层: 隐藏层1  
+        # 第1层: 隐藏层1  
         actor_layers.append(nn.Linear(actor_hidden_dims[0], actor_hidden_dims[1]))
-        actor_layers.append(nn.LayerNorm(actor_hidden_dims[1]))
-        # 第4层: 隐藏层2
+        # 第2层: 隐藏层2
         actor_layers.append(nn.Linear(actor_hidden_dims[1], actor_hidden_dims[2]))
-        actor_layers.append(nn.LayerNorm(actor_hidden_dims[2]))
-        # 第6层: 输出层
+        # 第3层: 输出层
         actor_layers.append(nn.Linear(actor_hidden_dims[-1], num_actions))
         
         self.actor = nn.Sequential(*actor_layers)
@@ -86,20 +83,21 @@ class ActorCriticStreaming(nn.Module):
         critic_layers = []
         # 第0层: 输入层
         critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
-        critic_layers.append(nn.LayerNorm(critic_hidden_dims[0]))
-        # 第2层: 隐藏层1
+        #critic_layers.append(nn.LayerNorm(critic_hidden_dims[0]))
+        # 第1层: 隐藏层1
         critic_layers.append(nn.Linear(critic_hidden_dims[0], critic_hidden_dims[1]))
-        critic_layers.append(nn.LayerNorm(critic_hidden_dims[1]))
-        # 第4层: 隐藏层2
+        #critic_layers.append(nn.LayerNorm(critic_hidden_dims[1]))
+        # 第2层: 隐藏层2
         critic_layers.append(nn.Linear(critic_hidden_dims[1], critic_hidden_dims[2]))
-        critic_layers.append(nn.LayerNorm(critic_hidden_dims[2]))
-        # 第6层: 输出层
+        #critic_layers.append(nn.LayerNorm(critic_hidden_dims[2]))
+        # 第4层: 输出层
         critic_layers.append(nn.Linear(critic_hidden_dims[-1], 1))
         
         self.critic = nn.Sequential(*critic_layers)
 
         # 应用权重初始化
         self.apply(initialize_weights)
+        print(f"Actor Critic Streaming Network Initialized")
 
         print(f"Actor Network (PPO-style): {mlp_input_dim_a} -> {' -> '.join(map(str, actor_hidden_dims))} -> mu({num_actions}) + std({num_actions}, {noise_std_type})")
         print(f"Critic Network (PPO-style): {mlp_input_dim_c} -> {' -> '.join(map(str, critic_hidden_dims))} -> value(1)")
@@ -113,12 +111,12 @@ class ActorCriticStreaming(nn.Module):
         Normal.set_default_validate_args(False)
 
     def actor_forward(self, x):
-        """Actor前向传播，使用Sequential结构"""
-        # 前向传播到第6层之前，应用elu激活
+        """Actor前向传播，使用Sequential结构（无LayerNorm）"""
+        # 前向传播，对所有Linear层（除最后一层）应用elu激活
         for i, layer in enumerate(self.actor):
             x = layer(x)
-            # 对Linear层应用elu，LayerNorm层不需要
-            if isinstance(layer, nn.Linear) and i < len(self.actor) - 1:  # 不是最后一层
+            # 对Linear层应用elu（除了最后一层）
+            if i < len(self.actor) - 1:  # 不是最后一层
                 x = F.elu(x)
         
         # 最后一层的输出就是mu
@@ -137,12 +135,12 @@ class ActorCriticStreaming(nn.Module):
         return mu, std
 
     def critic_forward(self, x):
-        """Critic前向传播，使用Sequential结构"""
-        # 前向传播，应用elu激活
+        """Critic前向传播，使用Sequential结构（无LayerNorm）"""
+        # 前向传播，对所有Linear层（除最后一层）应用elu激活
         for i, layer in enumerate(self.critic):
             x = layer(x)
-            # 对Linear层应用elu，LayerNorm层不需要，最后一层也不需要
-            if isinstance(layer, nn.Linear) and i < len(self.critic) - 1:  # 不是最后一层
+            # 对Linear层应用elu（除了最后一层）
+            if i < len(self.critic) - 1:  # 不是最后一层
                 x = F.elu(x)
         
         return x

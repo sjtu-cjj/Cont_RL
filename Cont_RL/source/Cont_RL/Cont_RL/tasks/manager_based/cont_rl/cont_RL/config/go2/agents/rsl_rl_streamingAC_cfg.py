@@ -40,7 +40,7 @@ class RslRlStreamingAlgorithmCfg:
     
     # discount and traces
     gamma: float = 0.99
-    lamda: float = 0.95  # eligibility trace decay (注意：参数名是lamda不是lambda_trace)
+    lamda: float = 0.8  # eligibility trace decay (注意：参数名是lamda不是lambda_trace)
     
     # entropy regularization
     entropy_coef: float = 0.01
@@ -96,7 +96,9 @@ class UnitreeGo2FlatStreamingRunnerCfg(UnitreeGo2RoughStreamingRunnerCfg):
         super().__post_init__()
 
         # 调整平地训练的参数
+        self.num_steps_per_env = 50
         self.max_iterations = 300
+        self.save_interval = 25
         self.experiment_name = "unitree_go2_flat_streaming"
         
         # 保持网络架构不变，但可以调整其他参数
