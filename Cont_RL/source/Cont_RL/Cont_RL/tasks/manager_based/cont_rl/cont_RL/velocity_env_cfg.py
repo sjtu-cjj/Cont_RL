@@ -109,7 +109,7 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True)
+    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=0.15, use_default_offset=True)
 
 
 @configclass
@@ -121,7 +121,7 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
+        #base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,

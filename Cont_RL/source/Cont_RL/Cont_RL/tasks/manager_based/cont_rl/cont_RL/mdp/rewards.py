@@ -248,141 +248,191 @@ def energy_consumption(
     return energy * scale
 
 
-# def joint_adaptation_reward(
-#     env: ManagerBasedRLEnv,
-#     healthy_joints_bonus: float = 0.1,
-#     damaged_joints_penalty: float = 0.2,
-#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-# ) -> torch.Tensor:
-#     """Reward for adapting to joint damage by encouraging use of healthy joints.
+
+def base_height_reward(
+    env: ManagerBasedRLEnv, 
+    target_height: float = 0.42,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward for maintaining base at target height (for stand-up task).
     
-#     This function encourages the robot to adapt to joint damage by:
-#     1. Providing bonus for using healthy joints efficiently
-#     2. Penalizing excessive use of damaged joints
+    This function rewards the robot for lifting its base to the target height.
+    The reward increases linearly with height up to the target, then remains constant.
     
-#     Args:
-#         env: The environment instance.
-#         healthy_joints_bonus: Bonus weight for using healthy joints.
-#         damaged_joints_penalty: Penalty weight for overusing damaged joints.
-#         asset_cfg: Configuration for the robot asset.
+    Args:
+        env: The environment instance.
+        target_height: Target height for the robot base.
+        asset_cfg: Configuration for the robot asset.
         
-#     Returns:
-#         torch.Tensor: Adaptation reward for each environment.
-#     """
-#     # Extract the asset
-#     asset = env.scene[asset_cfg.name]
+    Returns:
+        torch.Tensor: Height reward for each environment.
+    """
+    asset = env.scene[asset_cfg.name]
+    current_height = asset.data.root_pos_w[:, 2]
     
-#     # Get joint torques (absolute values for effort calculation)
-#     joint_torques = torch.abs(asset.data.applied_torque)
+    # Linear reward up to target height
+    height_reward = torch.clamp(current_height / target_height, 0.0, 1.0)
     
-#     # For now, assume all joints are healthy (you can modify this based on your damage model)
-#     # In practice, you would have a damage mask: damaged_joints_mask = get_damaged_joints_mask(env)
-#     num_joints = joint_torques.shape[1]
-#     healthy_joints_mask = torch.ones_like(joint_torques, dtype=torch.bool)
-    
-#     # Calculate torque distribution efficiency
-#     total_torque = torch.sum(joint_torques, dim=1, keepdim=True)
-#     torque_distribution = joint_torques / (total_torque + 1e-8)  # Avoid division by zero
-    
-#     # Reward even distribution among healthy joints (avoid overloading single joints)
-#     torque_variance = torch.var(torque_distribution, dim=1)
-#     adaptation_reward = -torque_variance * healthy_joints_bonus
-    
-#     return adaptation_reward
+    return height_reward
 
 
-# def stability_reward(
-#     env: ManagerBasedRLEnv,
-#     orientation_threshold: float = 0.1,
-#     velocity_threshold: float = 0.05,
-#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-# ) -> torch.Tensor:
-#     """Reward for maintaining stability during adaptation.
+def upright_posture_reward(
+    env: ManagerBasedRLEnv,
+    std: float = 0.3,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward for maintaining upright posture using exponential kernel.
     
-#     This function rewards the robot for maintaining stable motion patterns
-#     even when joints are damaged, emphasizing smooth and controlled movement.
+    This function rewards the robot for keeping its body orientation close to upright.
+    Uses exponential decay based on roll and pitch angles.
     
-#     Args:
-#         env: The environment instance.
-#         orientation_threshold: Threshold for orientation stability.
-#         velocity_threshold: Threshold for velocity smoothness.
-#         asset_cfg: Configuration for the robot asset.
+    Args:
+        env: The environment instance.
+        std: Standard deviation for the exponential kernel.
+        asset_cfg: Configuration for the robot asset.
         
-#     Returns:
-#         torch.Tensor: Stability reward for each environment.
-#     """
-#     # Extract the asset
-#     asset = env.scene[asset_cfg.name]
+    Returns:
+        torch.Tensor: Upright posture reward for each environment.
+    """
+    asset = env.scene[asset_cfg.name]
     
-#     # Check orientation stability (roll and pitch should be small)
-#     root_quat = asset.data.root_quat_w
-#     from isaaclab.utils.math import quat_to_euler_xyz
-#     roll, pitch, _ = quat_to_euler_xyz(root_quat)
+    # Extract roll and pitch from quaternion
+    quat = asset.data.root_quat_w
+    # Convert quaternion to euler angles (simplified for roll/pitch)
+    # q = [w, x, y, z]
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     
-#     orientation_penalty = torch.abs(roll) + torch.abs(pitch)
-#     orientation_stable = orientation_penalty < orientation_threshold
+    # Calculate roll and pitch
+    roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = torch.asin(torch.clamp(2 * (w * y - z * x), -1.0, 1.0))
     
-#     # Check velocity smoothness (low angular velocity in roll/pitch)
-#     ang_vel = asset.data.root_ang_vel_w
-#     velocity_smoothness = torch.abs(ang_vel[:, 0]) + torch.abs(ang_vel[:, 1])  # roll and pitch rates
-#     velocity_smooth = velocity_smoothness < velocity_threshold
+    # Compute orientation error (roll^2 + pitch^2)
+    orientation_error = roll**2 + pitch**2
     
-#     # Combine stability metrics
-#     stability_score = orientation_stable.float() + velocity_smooth.float()
-    
-#     return stability_score
+    # Exponential reward
+    return torch.exp(-orientation_error / std**2)
 
 
-# def damaged_joint_compensation(
-#     env: ManagerBasedRLEnv,
-#     damaged_joints_mask: torch.Tensor = None,
-#     compensation_bonus: float = 0.5,
-#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-# ) -> torch.Tensor:
-#     """Reward for compensatory movement patterns when joints are damaged.
+def stand_up_success_reward(
+    env: ManagerBasedRLEnv,
+    height_thresh: float = 0.40,
+    angle_thresh: float = 0.25,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Binary reward for successful standing up.
     
-#     This function encourages the development of alternative movement patterns
-#     that compensate for damaged joints by utilizing healthy joints more effectively.
+    This function gives a binary reward when the robot successfully stands up,
+    defined as having sufficient height and upright orientation.
     
-#     Args:
-#         env: The environment instance.
-#         damaged_joints_mask: Boolean mask indicating which joints are damaged.
-#         compensation_bonus: Bonus for effective compensation strategies.
-#         asset_cfg: Configuration for the robot asset.
+    Args:
+        env: The environment instance.
+        height_thresh: Minimum height threshold for success.
+        angle_thresh: Maximum angle deviation (roll/pitch) for success.
+        asset_cfg: Configuration for the robot asset.
         
-#     Returns:
-#         torch.Tensor: Compensation reward for each environment.
-#     """
-#     # Extract the asset
-#     asset = env.scene[asset_cfg.name]
+    Returns:
+        torch.Tensor: Binary success reward for each environment.
+    """
+    asset = env.scene[asset_cfg.name]
     
-#     # Get joint positions and velocities
-#     joint_pos = asset.data.joint_pos
-#     joint_vel = asset.data.joint_vel
+    # Check height condition
+    current_height = asset.data.root_pos_w[:, 2]
+    height_ok = current_height >= height_thresh
     
-#     if damaged_joints_mask is None:
-#         # Default: no damaged joints (you can implement damage detection here)
-#         damaged_joints_mask = torch.zeros_like(joint_pos, dtype=torch.bool)
+    # Check orientation condition
+    quat = asset.data.root_quat_w
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     
-#     # Calculate compensation effectiveness
-#     # Healthy joints should show more activity when damaged joints are present
-#     healthy_joints_mask = ~damaged_joints_mask
+    roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = torch.asin(torch.clamp(2 * (w * y - z * x), -1.0, 1.0))
     
-#     # Measure healthy joint utilization
-#     healthy_joint_activity = torch.abs(joint_vel) * healthy_joints_mask.float()
-#     damaged_joint_activity = torch.abs(joint_vel) * damaged_joints_mask.float()
+    angle_ok = (torch.abs(roll) < angle_thresh) & (torch.abs(pitch) < angle_thresh)
     
-#     # Reward high healthy joint activity when damaged joints are present
-#     if torch.any(damaged_joints_mask):
-#         total_healthy_activity = torch.sum(healthy_joint_activity, dim=1)
-#         total_damaged_activity = torch.sum(damaged_joint_activity, dim=1)
+    # Combined success condition
+    success = height_ok & angle_ok
+    
+    return success.float()
+
+
+def feet_contact_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    min_contacts: int = 3
+) -> torch.Tensor:
+    """Reward for having multiple feet in contact with ground.
+    
+    This function rewards the robot for having multiple feet in contact with the ground,
+    which is important for stability during stand-up motion.
+    
+    Args:
+        env: The environment instance.
+        sensor_cfg: Configuration for the contact sensor.
+        min_contacts: Minimum number of feet that should be in contact.
         
-#         # Encourage healthy joints to compensate
-#         compensation_ratio = total_healthy_activity / (total_damaged_activity + 1e-8)
-#         compensation_reward = torch.clamp(compensation_ratio * compensation_bonus, 0, 1)
-#     else:
-#         compensation_reward = torch.zeros(env.num_envs, device=env.device)
+    Returns:
+        torch.Tensor: Contact reward for each environment.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     
-#     return compensation_reward
+    # Check which feet are in contact
+    net_forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    contact_forces = torch.norm(net_forces, dim=-1).max(dim=1)[0]  # Max over history
+    in_contact = contact_forces > 1.0  # Threshold for contact detection
+    
+    # Count number of feet in contact
+    num_contacts = torch.sum(in_contact, dim=1)
+    
+    # Reward based on number of contacts
+    reward = torch.clamp(num_contacts.float() / min_contacts, 0.0, 1.0)
+    
+    return reward
+
+    return reward
+
+
+def joint_target_posture_reward(
+    env: ManagerBasedRLEnv,
+    target_joint_pos: dict,
+    std: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward for moving towards target joint positions (guide to standing posture).
+    
+    This function provides a gentle guidance reward to encourage the robot to move
+    towards the target standing posture. Uses exponential kernel for smooth rewards.
+    
+    Args:
+        env: The environment instance.
+        target_joint_pos: Dictionary mapping joint names to target positions.
+        std: Standard deviation for the exponential kernel (higher = more lenient).
+        asset_cfg: Configuration for the robot asset.
+        
+    Returns:
+        torch.Tensor: Target posture guidance reward for each environment.
+    """
+    asset = env.scene[asset_cfg.name]
+    
+    total_error = torch.zeros(env.num_envs, device=env.device)
+    num_joints = 0
+    
+    # Calculate error for each target joint
+    for joint_name, target_pos in target_joint_pos.items():
+        joint_ids = asset.find_joints(joint_name)[0]
+        if len(joint_ids) > 0:
+            current_pos = asset.data.joint_pos[:, joint_ids[0]]
+            error = (current_pos - target_pos)**2
+            total_error += error
+            num_joints += 1
+    
+    if num_joints == 0:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Average error across joints
+    avg_error = total_error / num_joints
+    
+    # Exponential reward (higher std = more lenient)
+    reward = torch.exp(-avg_error / std**2)
+    
+    return reward
 
 

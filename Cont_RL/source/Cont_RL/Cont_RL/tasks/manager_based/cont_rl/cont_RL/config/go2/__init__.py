@@ -120,3 +120,23 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_streamingAC_cfg:UnitreeGo2FlatStreamingRunnerCfg",
     },
 )
+
+# reset envs
+gym.register(
+    id="Cont-RL-Unitree-Go2-ContRL-reset-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.reset_env_cfg:UnitreeGo2ResetEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_reset_cfg:UnitreeGo2FlatPPORunnerCfg",
+    },
+)
+gym.register(
+    id="Cont-RL-Unitree-Go2-ContRL-reset-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.reset_env_cfg:UnitreeGo2ResetEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_reset_cfg:UnitreeGo2FlatPPORunnerCfg",
+    },
+)

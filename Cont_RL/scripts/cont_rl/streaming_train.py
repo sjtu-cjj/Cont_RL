@@ -34,8 +34,8 @@ import cli_args  # isort: skip
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train streamingAC agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--video_interval", type=int, default=200, help="Interval between video recordings (in steps).")
+parser.add_argument("--video_length", type=int, default=600, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_interval", type=int, default=500, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -131,6 +131,31 @@ def format_time(seconds):
         return f"{secs}秒"
 
 
+def collect_damage_joint_info(args_cli):
+    """收集损伤关节相关信息"""
+    damage_info = {
+        "experiment_info": {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "command_line_args": " ".join(sys.argv),
+        },
+        "damaged_joint": {
+            "joint_name": os.environ.get("DAMAGED_JOINT", "None"),
+            "source": "environment_variable"
+        },
+        "damage_configuration": {
+            "enable_joint_damage": args_cli.enable_joint_damage,
+            "damage_type": getattr(args_cli, 'damage_type', 'None'),
+            "damage_probability": getattr(args_cli, 'damage_probability', 0.0),
+            "damage_severity": getattr(args_cli, 'damage_severity', 1.0),
+            "max_damaged_joints": getattr(args_cli, 'max_damaged_joints', 1),
+        },
+        "training_configuration": {
+            "finetune_mode": getattr(args_cli, 'finetune_mode', 'None'),
+            "pretrained_checkpoint": getattr(args_cli, 'pretrained_checkpoint', 'None'),
+            "task": args_cli.task,
+        }
+    }
+    return damage_info
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -155,18 +180,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         agent_cfg.device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-    # specify directory for logging experiments
+        # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl_streaming", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging streamingAC experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    # 构建包含损伤和微调信息的日志文件夹名称
+    log_dir_prefix = ""
+    
+    # 添加损伤关节信息
+    damaged_joint = os.environ.get("DAMAGED_JOINT", None)
+    if damaged_joint:
+        log_dir_prefix += f"{damaged_joint}_"
+    
+    # 添加损伤类型信息
+    if args_cli.enable_joint_damage and hasattr(args_cli, 'damage_type'):
+        log_dir_prefix += f"{args_cli.damage_type}_"
+    
+    # 添加微调模式信息
+    if args_cli.pretrained_checkpoint and hasattr(args_cli, 'finetune_mode'):
+        log_dir_prefix += f"{args_cli.finetune_mode}_"
+    
+    # specify directory for logging runs: {damage_info}_{time-stamp}_{run_name}
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_dir = f"{log_dir_prefix}{timestamp}"
+    
     # This way, the Ray Tune workflow can extract experiment name.
     print(f"Exact experiment name requested from command line: {log_dir}")
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
-
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -228,11 +271,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # load previously trained model
         runner.load(resume_path)
 
-    # dump the configuration into log-directory
+        # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+    
+    # 保存损伤关节信息（如果启用了关节损伤或有预训练模型）
+    if args_cli.enable_joint_damage or args_cli.pretrained_checkpoint:
+        damage_joint_info = collect_damage_joint_info(args_cli)
+        dump_yaml(os.path.join(log_dir, "params", "damaged_joint.yaml"), damage_joint_info)
 
     # print training information
     print("\n" + "="*80)

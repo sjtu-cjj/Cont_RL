@@ -255,17 +255,7 @@ def main():
                 actions = damage_simulator.apply_joint_damage(actions)
             
             # env stepping
-            obs, rewards, dones, infos = env.step(actions)
-            
-            # 统计reward信息
-            total_reward += rewards.sum().item()
-            episode_count += dones.sum().item()
-            
-            # 打印episode完成信息
-            if dones.any():
-                completed_envs = dones.sum().item()
-                avg_reward = total_reward / max(episode_count, 1)
-                print(f"✅ Episodes completed: {episode_count}, Average reward: {avg_reward:.2f}")
+            obs, _, _, _ = env.step(actions)
         
         if args_cli.video:
             timestep += 1
