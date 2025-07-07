@@ -3,7 +3,7 @@
 按照https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html 教程安装isaacsim和isaclab
 ## 2.下载Cont_RL库并安装
 ```bash
- git clone git@github.com:sjtu-cjj/Cont_RL.git
+ git clone https://github.com/sjtu-cjj/Cont_RL.git
  cd ./Cont_	RL
  python -m pip install -e ./Cont_RL/source/Cont_RL  # 安装Cont_RL库
  python -m pip install -e ./rsl_rl/                 # 安装rsl_rl库
