@@ -4,7 +4,7 @@
 ## 2.下载Cont_RL库并安装
 ```bash
  git clone https://github.com/sjtu-cjj/Cont_RL.git
- cd ./Cont_	RL
+ cd ./Cont_RL
  python -m pip install -e ./Cont_RL/source/Cont_RL  # 安装Cont_RL库
  python -m pip install -e ./rsl_rl/                 # 安装rsl_rl库
 ```
