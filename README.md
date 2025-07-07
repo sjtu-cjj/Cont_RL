@@ -15,5 +15,5 @@
 训练模型保存在./Cont_RL/logs目录下
 ## 4.查看训练结果
 ```bash
- python ./Cont_RL/scripts/rsl_rl/play.py --task=Cont-RL-Velocity-Flat-Unitree-Go2-v0
+ python ./Cont_RL/scripts/rsl_rl/play.py --task=Cont-RL-Velocity-Flat-Unitree-Go2-Play-v0
 ```
